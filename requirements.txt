@@ -1,0 +1,23 @@
+# Core dependencies for Real-Time Object Detection & Counting System
+
+# Computer Vision
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Deep Learning - YOLO
+ultralytics>=8.0.0
+
+# GUI
+# Tkinter is included with Python, no installation needed
+
+# PyTorch (install separately based on your system)
+# For CPU-only:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# For GPU (CUDA 11.8):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# For GPU (CUDA 12.1):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Optional: For better performance on Windows
+# pip install intel-openmp mkl

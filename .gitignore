@@ -1,0 +1,32 @@
+# Virtual environment
+venv/
+.env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+
+# IDE settings
+.vscode/
+.idea/
+
+# Model weights or large files
+*.pt
+*.h5
+*.onnx
+*.pkl
+
+# Build / dist folders
+build/
+dist/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
