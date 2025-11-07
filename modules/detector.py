@@ -178,6 +178,7 @@ class ObjectDetector:
         self.device = device
         self.img_size = img_size
         self.model = None
+        self.use_half = False  # Enable FP16 on CUDA for faster inference
         
         # Initialize tracker
         self.tracker = SimpleTracker(max_age=30, min_hits=3, iou_threshold=0.3)
@@ -207,19 +208,28 @@ class ObjectDetector:
         try:
             print(f"Loading YOLO model: {self.model_path}...")
             self.model = YOLO(self.model_path)
-            
+
             if self.device == 'cuda':
                 try:
                     self.model.to('cuda')
-                    print("[OK] Using GPU")
-                except:
+                    self.use_half = True
+                    # Fuse model for slightly faster inference when supported
+                    try:
+                        self.model.fuse()
+                    except Exception:
+                        pass
+                    print("[OK] Using GPU (FP16)")
+                except Exception:
                     print("[WARNING] CUDA not available, using CPU")
                     self.device = 'cpu'
+                    self.use_half = False
             else:
                 print("[OK] Using CPU")
-            
-            # Warm up model
-            dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+
+            # Warm up model (match size)
+            warm_h = self.img_size
+            warm_w = self.img_size
+            dummy = np.zeros((warm_h, warm_w, 3), dtype=np.uint8)
             _ = self.model(dummy, verbose=False)
             
             print(f"[OK] Model loaded successfully")
@@ -256,7 +266,11 @@ class ObjectDetector:
                 conf=self.confidence,
                 iou=self.iou,
                 imgsz=self.img_size,
-                verbose=False
+                verbose=False,
+                half=self.use_half,
+                agnostic_nms=False,
+                max_det=200,
+                classes=list(self.class_names.keys())
             )
             
             detections = []

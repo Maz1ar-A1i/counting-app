@@ -1,8 +1,4 @@
-# main.py
-"""
-Main entry point for Real-Time Object Detection & Counting System.
-Integrates camera, detector, and GUI components.
-"""
+
 
 import sys
 import os
@@ -17,13 +13,7 @@ from modules.ui import ObjectDetectionGUI
 
 
 def cleanup_resources(camera, detector):
-    """
-    Clean up all resources properly.
-    
-    Args:
-        camera: ThreadedVideoCapture instance
-        detector: ObjectDetector instance
-    """
+ 
     print("\n" + "="*60)
     print("CLEANING UP RESOURCES")
     print("="*60)
@@ -49,16 +39,15 @@ def main():
     print("="*60)
     print("\nInitializing components...")
     
-    # Check for GPU
-    device = 'cpu'
-    if torch.cuda.is_available():
+    # Auto-select GPU if available
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cuda':
         print(f"[INFO] CUDA available: {torch.cuda.get_device_name(0)}")
-        use_gpu = input("Use GPU? (y/n, default=n): ").strip().lower()
-        if use_gpu == 'y':
-            device = 'cuda'
-            print("[OK] Using GPU")
-        else:
-            print("[OK] Using CPU")
+        print("[OK] Using GPU")
+        try:
+            torch.backends.cudnn.benchmark = True
+        except Exception:
+            pass
     else:
         print("[INFO] CUDA not available, using CPU")
     

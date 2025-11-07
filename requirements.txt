@@ -1,11 +1,11 @@
-# Core dependencies for Real-Time Object Detection & Counting System
 
-# Computer Vision
+
+
 opencv-python>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0
+imutils>=0.5.4
 
-# Deep Learning - YOLO
 ultralytics>=8.0.0
 
 # GUI

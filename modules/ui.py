@@ -60,6 +60,10 @@ class ObjectDetectionGUI:
         # Processing state
         self.is_processing = False
         self.processing_thread = None
+        self.frame_index = 0
+        self.infer_every_n = 2  # run detection every N frames (reuse last results otherwise)
+        self.last_tracked_objects = []
+        self.last_line_crosses = []
         
         # Initialize UI
         self._create_widgets()
@@ -401,27 +405,37 @@ Line Drawing:
         if self.is_processing:
             ret, frame = self.camera.read()
             if ret and frame is not None:
-                # Process frame
-                result = self.detector.process_frame(frame)
-                tracked_objects = result['tracked_objects']
-                line_crosses = result['line_crosses']
-                counts = result['counts']
-                
-                # Update counts
-                for class_name, count in counts.items():
-                    self.counts_by_class[class_name] = self.counts_by_class.get(class_name, 0) + count
-                self.total_count = sum(self.counts_by_class.values())
-                
-                # Draw on frame
+                self.frame_index += 1
+
+                # Decide whether to run inference this frame
+                if (self.frame_index % self.infer_every_n) == 0:
+                    result = self.detector.process_frame(frame)
+                    tracked_objects = result['tracked_objects']
+                    line_crosses = result['line_crosses']
+                    counts = result['counts']
+
+                    # Update counts
+                    for class_name, count in counts.items():
+                        self.counts_by_class[class_name] = self.counts_by_class.get(class_name, 0) + count
+                    self.total_count = sum(self.counts_by_class.values())
+
+                    # Cache results for skipped frames
+                    self.last_tracked_objects = tracked_objects
+                    self.last_line_crosses = line_crosses
+                else:
+                    tracked_objects = self.last_tracked_objects
+                    line_crosses = self.last_line_crosses
+
+                # Draw overlays using latest available results
                 frame = self._draw_detections(frame, tracked_objects, line_crosses)
-                
-                # Update FPS
+
+                # Update FPS (UI-side)
                 self.fps_history.append(time.time())
                 if len(self.fps_history) > 1:
                     elapsed = self.fps_history[-1] - self.fps_history[0]
                     if elapsed > 0:
                         self.current_fps = (len(self.fps_history) - 1) / elapsed
-                
+
                 # Display frame
                 self._display_frame(frame)
                 self.current_frame = frame
