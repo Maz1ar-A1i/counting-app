@@ -204,38 +204,79 @@ class ObjectDetector:
         }
         
     def load_model(self):
-        """Load YOLO model."""
+        """Load YOLO model with GPU support."""
         try:
             print(f"Loading YOLO model: {self.model_path}...")
+            
+            # Check GPU availability
+            if self.device == 'cuda':
+                import torch
+                if not torch.cuda.is_available():
+                    print("[WARNING] CUDA requested but not available, falling back to CPU")
+                    self.device = 'cpu'
+                    self.use_half = False
+                else:
+                    print(f"[INFO] GPU detected: {torch.cuda.get_device_name(0)}")
+                    print(f"[INFO] GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+            
+            # Load model
             self.model = YOLO(self.model_path)
 
             if self.device == 'cuda':
                 try:
+                    # Move model to GPU
                     self.model.to('cuda')
+                    
+                    # Enable FP16 for faster inference
                     self.use_half = True
+                    
+                    # Enable cuDNN optimizations
+                    import torch
+                    torch.backends.cudnn.benchmark = True
+                    torch.backends.cudnn.enabled = True
+                    
                     # Fuse model for slightly faster inference when supported
                     try:
                         self.model.fuse()
+                        print("[INFO] Model fused for optimization")
                     except Exception:
                         pass
-                    print("[OK] Using GPU (FP16)")
-                except Exception:
-                    print("[WARNING] CUDA not available, using CPU")
+                    
+                    print("[OK] Using GPU (FP16) - Optimized for speed")
+                except Exception as e:
+                    print(f"[WARNING] GPU setup failed: {e}")
+                    print("[WARNING] Falling back to CPU")
                     self.device = 'cpu'
                     self.use_half = False
+                    self.model.to('cpu')
             else:
                 print("[OK] Using CPU")
+                self.use_half = False
 
-            # Warm up model (match size)
+            # Warm up model on the correct device
+            print("[INFO] Warming up model...")
             warm_h = self.img_size
             warm_w = self.img_size
             dummy = np.zeros((warm_h, warm_w, 3), dtype=np.uint8)
-            _ = self.model(dummy, verbose=False)
             
-            print(f"[OK] Model loaded successfully")
+            # Run warm-up inference
+            _ = self.model(
+                dummy, 
+                verbose=False,
+                half=self.use_half if self.device == 'cuda' else False
+            )
+            
+            # Clear GPU cache if using GPU
+            if self.device == 'cuda':
+                import torch
+                torch.cuda.empty_cache()
+            
+            print(f"[OK] Model loaded and warmed up successfully")
             return True
         except Exception as e:
             print(f"[ERROR] Failed to load model: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def set_confidence(self, confidence):
@@ -260,17 +301,18 @@ class ObjectDetector:
             return []
         
         try:
-            # Run YOLO inference
+            # Run YOLO inference with GPU optimization
             results = self.model(
                 frame,
                 conf=self.confidence,
                 iou=self.iou,
                 imgsz=self.img_size,
                 verbose=False,
-                half=self.use_half,
+                half=self.use_half if self.device == 'cuda' else False,  # Only use FP16 on GPU
                 agnostic_nms=False,
                 max_det=200,
-                classes=list(self.class_names.keys())
+                classes=list(self.class_names.keys()),
+                device=self.device  # Explicitly specify device
             )
             
             detections = []

@@ -84,7 +84,7 @@ function Dashboard({ onOpenCamera, settings, onUpdateSettings, onCameraSourceCha
                     type="text"
                     value={settings.cameraSource}
                     onChange={(e) => onCameraSourceChange(e.target.value)}
-                    placeholder="0 for webcam, or IP camera URL"
+                    placeholder="0 for webcam, or RTSP/IP camera URL (e.g., rtsp://...)"
                     className="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>

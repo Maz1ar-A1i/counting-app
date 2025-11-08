@@ -77,8 +77,30 @@ class ThreadedVideoCapture:
                 else:
                     return VideoStream(src=source, resolution=(self.target_width, self.target_height)).start()
             else:
-                # IP camera - use imutils
-                return VideoStream(src=source).start()
+                # Check if it's an RTSP stream
+                if isinstance(source, str) and source.startswith('rtsp://'):
+                    print(f"[INFO] Detected RTSP stream, configuring for RTSP...")
+                    # RTSP stream - use OpenCV directly with RTSP optimizations
+                    cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                    
+                    # RTSP-specific settings for better stability
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer to reduce latency
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
+                    
+                    # Set timeout for RTSP connection (in milliseconds)
+                    # Note: OpenCV doesn't directly support timeout, but we'll handle it in the read loop
+                    
+                    if cap.isOpened():
+                        print("[OK] RTSP stream opened successfully")
+                        return cap
+                    else:
+                        print("[WARNING] Failed to open RTSP stream with OpenCV, trying imutils...")
+                        # Fallback to imutils
+                        return VideoStream(src=source).start()
+                else:
+                    # IP camera (HTTP/MJPEG) - use imutils
+                    print(f"[INFO] Detected IP camera stream...")
+                    return VideoStream(src=source).start()
         except Exception as e:
             print(f"[WARNING] VideoStream init error: {e}, trying fallback...")
             # Fallback to standard OpenCV
@@ -89,6 +111,12 @@ class ThreadedVideoCapture:
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 return cap
+            elif isinstance(source, str) and source.startswith('rtsp://'):
+                # RTSP fallback
+                print("[INFO] Trying RTSP fallback with OpenCV...")
+                cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                return cap if cap.isOpened() else None
             return None
     
     def start(self):
@@ -161,18 +189,23 @@ class ThreadedVideoCapture:
         is_opencv_cap = hasattr(self.vs, 'read') and not hasattr(self.vs, 'stop')
         consecutive_errors = 0
         max_errors = 10
+        is_rtsp = isinstance(self.source, str) and self.source.startswith('rtsp://')
         
         while self.is_running and self.vs is not None:
             try:
                 if is_opencv_cap:
-                    # Standard OpenCV VideoCapture
+                    # Standard OpenCV VideoCapture (including RTSP)
                     ret, frame = self.vs.read()
-                    if not ret:
+                    if not ret or frame is None:
                         consecutive_errors += 1
                         if consecutive_errors > max_errors:
-                            print("[ERROR] Too many consecutive read failures, stopping capture")
+                            if is_rtsp:
+                                print("[ERROR] RTSP stream connection lost. Too many consecutive read failures.")
+                            else:
+                                print("[ERROR] Too many consecutive read failures, stopping capture")
                             break
-                        time.sleep(0.01)
+                        # For RTSP, wait a bit longer before retrying
+                        time.sleep(0.1 if is_rtsp else 0.01)
                         continue
                     consecutive_errors = 0
                 else:

@@ -47,20 +47,41 @@ accumulated_counts = {}  # Track cumulative counts
 
 
 def init_detector():
-    """Initialize detector with auto GPU detection."""
+    """Initialize detector with auto GPU detection and optimization."""
     global detector
     
     try:
+        # Check GPU availability
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
         if device == 'cuda':
             try:
+                # Enable cuDNN optimizations
                 torch.backends.cudnn.benchmark = True
-                print(f"[INFO] Using GPU: {torch.cuda.get_device_name(0)}")
+                torch.backends.cudnn.enabled = True
+                
+                # Get GPU info
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                cuda_version = torch.version.cuda
+                
+                print("=" * 60)
+                print("[GPU] CUDA Available - GPU Acceleration Enabled")
+                print(f"[GPU] Device: {gpu_name}")
+                print(f"[GPU] Memory: {gpu_memory:.2f} GB")
+                print(f"[GPU] CUDA Version: {cuda_version}")
+                print("=" * 60)
             except Exception as e:
                 print(f"[WARNING] CUDA setup error: {e}")
+                print("[WARNING] Falling back to CPU")
+                device = 'cpu'
         else:
-            print("[INFO] Using CPU")
+            print("=" * 60)
+            print("[CPU] CUDA not available - Using CPU")
+            print("[CPU] For GPU acceleration, install PyTorch with CUDA support")
+            print("=" * 60)
         
+        # Initialize detector
         detector = ObjectDetector(
             model_path='yolov8n.pt',
             confidence=0.5,
@@ -169,11 +190,26 @@ def process_frames():
             
             # Small delay to prevent overwhelming the system
             time.sleep(0.01)
+            
+            # Periodic GPU memory cleanup (every 100 frames)
+            if frame_skip % 100 == 0 and detector is not None and detector.device == 'cuda':
+                try:
+                    import torch
+                    torch.cuda.empty_cache()
+                except:
+                    pass
     
     except Exception as e:
         print(f"[ERROR] Processing thread error: {e}")
         traceback.print_exc()
     finally:
+        # Cleanup GPU memory on exit
+        if detector is not None and detector.device == 'cuda':
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except:
+                pass
         print("[INFO] Frame processing thread stopped")
         is_processing = False
 
@@ -282,11 +318,17 @@ def start_camera():
         data = request.json or {}
         source = data.get('source', 0)
         
-        # Parse source - handle string "0" or integer 0
+        # Parse source - handle string "0" or integer 0, or RTSP/IP camera URLs
         try:
             if isinstance(source, str):
-                # Try to convert to int, if fails keep as string (for IP cameras)
-                source = int(source)
+                # Check if it's an RTSP or HTTP URL
+                if source.startswith('rtsp://') or source.startswith('http://') or source.startswith('https://'):
+                    # Keep as string for RTSP/IP camera URLs
+                    print(f"[INFO] Detected camera URL: {source[:50]}...")  # Show first 50 chars for security
+                    pass
+                else:
+                    # Try to convert to int, if fails keep as string
+                    source = int(source)
         except ValueError:
             # Keep as string for IP camera URLs
             pass
