@@ -352,14 +352,60 @@ def start_camera():
         
         # Start camera
         print("[INFO] Creating camera instance...")
-        camera = ThreadedVideoCapture(source=source, width=640, height=360)
+        try:
+            camera = ThreadedVideoCapture(source=source, width=640, height=360)
+        except Exception as e:
+            error_msg = f'Failed to create camera instance: {str(e)}'
+            print(f"[ERROR] {error_msg}")
+            traceback.print_exc()
+            return jsonify({
+                'success': False, 
+                'message': error_msg,
+                'error_type': type(e).__name__
+            }), 500
         
         print("[INFO] Starting camera stream...")
-        if not camera.start():
-            error_msg = 'Failed to start camera. Check if camera is connected and not used by another application.'
+        try:
+            if not camera.start():
+                # Get more details about why it failed
+                if isinstance(source, str) and source.startswith('rtsp://'):
+                    error_msg = 'Failed to connect to RTSP stream. Possible reasons:\n' \
+                              '- RTSP URL is incorrect or camera is offline\n' \
+                              '- Network connectivity issues\n' \
+                              '- Camera credentials are wrong\n' \
+                              '- Firewall blocking port 554\n' \
+                              '- Camera does not support the requested stream format'
+                elif isinstance(source, int):
+                    error_msg = f'Failed to start camera (index {source}). Possible reasons:\n' \
+                              '- Camera is not connected\n' \
+                              '- Camera is being used by another application\n' \
+                              '- Camera index is incorrect'
+                else:
+                    error_msg = 'Failed to start camera. Check if camera is accessible.'
+                
+                print(f"[ERROR] {error_msg}")
+                print(f"[ERROR] Camera source: {source if not isinstance(source, str) or not source.startswith('rtsp://') else source[:50] + '...'}")
+                camera = None
+                return jsonify({
+                    'success': False, 
+                    'message': error_msg,
+                    'source_type': 'rtsp' if isinstance(source, str) and source.startswith('rtsp://') else 'local'
+                }), 500
+        except Exception as e:
+            error_msg = f'Exception during camera start: {str(e)}'
             print(f"[ERROR] {error_msg}")
-            camera = None
-            return jsonify({'success': False, 'message': error_msg}), 500
+            traceback.print_exc()
+            if camera:
+                try:
+                    camera.stop()
+                except:
+                    pass
+                camera = None
+            return jsonify({
+                'success': False, 
+                'message': error_msg,
+                'error_type': type(e).__name__
+            }), 500
         
         print("[OK] Camera started successfully")
         
@@ -382,19 +428,40 @@ def start_camera():
     
     except Exception as e:
         error_msg = f'Error starting camera: {str(e)}'
-        print(f"[ERROR] {error_msg}")
-        print(traceback.format_exc())
+        error_type = type(e).__name__
+        print(f"\n[ERROR] ========================================")
+        print(f"[ERROR] Camera start failed!")
+        print(f"[ERROR] Error Type: {error_type}")
+        print(f"[ERROR] Error Message: {error_msg}")
+        print(f"[ERROR] ========================================")
+        print(f"\n[ERROR] Full traceback:")
+        traceback.print_exc()
+        print(f"[ERROR] ========================================\n")
+        
+        # Provide more specific error messages
+        detailed_msg = error_msg
+        if 'RTSP' in str(e) or 'rtsp' in str(e).lower():
+            detailed_msg = f'RTSP connection failed: {error_msg}. Check if the camera is accessible and the URL is correct.'
+        elif 'CUDA' in str(e) or 'cuda' in str(e).lower():
+            detailed_msg = f'GPU error: {error_msg}. Trying to continue with CPU...'
+        elif 'model' in str(e).lower() or 'yolo' in str(e).lower():
+            detailed_msg = f'Model loading error: {error_msg}. Check if YOLO model file exists.'
         
         # Cleanup on error
         if camera:
             try:
                 camera.stop()
-            except:
-                pass
+            except Exception as cleanup_error:
+                print(f"[WARNING] Error during camera cleanup: {cleanup_error}")
             camera = None
         is_processing = False
         
-        return jsonify({'success': False, 'message': error_msg}), 500
+        return jsonify({
+            'success': False, 
+            'message': detailed_msg,
+            'error_type': error_type,
+            'error_details': str(e)
+        }), 500
 
 
 @app.route('/api/camera/stop', methods=['POST'])

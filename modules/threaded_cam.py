@@ -135,16 +135,26 @@ class ThreadedVideoCapture:
             self.vs = self._init_videostream(self.source)
             
             if self.vs is None:
-                raise Exception("Failed to initialize video stream")
+                if isinstance(self.source, str) and self.source.startswith('rtsp://'):
+                    raise Exception(f"Failed to initialize RTSP stream. Check network connectivity and camera accessibility.")
+                else:
+                    raise Exception(f"Failed to initialize video stream for source: {self.source}")
             
             # Check if it's OpenCV VideoCapture or imutils VideoStream
             is_opencv_cap = hasattr(self.vs, 'read') and not hasattr(self.vs, 'stop')
             
             if is_opencv_cap:
-                # Standard OpenCV VideoCapture
+                # Standard OpenCV VideoCapture (including RTSP)
                 if not self.vs.isOpened():
-                    raise Exception(f"Failed to open camera source: {self.source}")
-                print("[OK] Camera opened with OpenCV DirectShow backend")
+                    if isinstance(self.source, str) and self.source.startswith('rtsp://'):
+                        raise Exception(f"RTSP stream failed to open. Camera may be offline, URL incorrect, or network unreachable.")
+                    else:
+                        raise Exception(f"Failed to open camera source: {self.source}")
+                
+                if isinstance(self.source, str) and self.source.startswith('rtsp://'):
+                    print("[OK] RTSP stream opened with OpenCV FFMPEG backend")
+                else:
+                    print("[OK] Camera opened with OpenCV DirectShow backend")
             else:
                 # imutils VideoStream
                 time.sleep(1.0)
@@ -172,15 +182,36 @@ class ThreadedVideoCapture:
             return True
             
         except Exception as e:
-            print(f"[ERROR] Failed to start camera: {e}")
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # Provide more detailed error information
+            if isinstance(self.source, str) and self.source.startswith('rtsp://'):
+                print(f"[ERROR] ========================================")
+                print(f"[ERROR] RTSP Camera Connection Failed")
+                print(f"[ERROR] Error Type: {error_type}")
+                print(f"[ERROR] Error Message: {error_msg}")
+                print(f"[ERROR] RTSP URL: {self.source[:60]}...")
+                print(f"[ERROR] ========================================")
+                print(f"[ERROR] Troubleshooting steps:")
+                print(f"[ERROR] 1. Verify camera is online: ping the camera IP")
+                print(f"[ERROR] 2. Test RTSP URL in VLC Media Player")
+                print(f"[ERROR] 3. Check username/password in URL")
+                print(f"[ERROR] 4. Verify port 554 is not blocked by firewall")
+                print(f"[ERROR] 5. Check if camera supports RTSP stream format")
+                print(f"[ERROR] ========================================")
+            else:
+                print(f"[ERROR] Failed to start camera: {error_type}: {error_msg}")
+                print(f"[ERROR] Camera source: {self.source}")
+            
             if self.vs is not None:
                 try:
                     if hasattr(self.vs, 'stop'):
                         self.vs.stop()
                     else:
                         self.vs.release()
-                except:
-                    pass
+                except Exception as cleanup_error:
+                    print(f"[WARNING] Error during cleanup: {cleanup_error}")
                 self.vs = None
             return False
     
