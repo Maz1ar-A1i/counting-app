@@ -1,12 +1,20 @@
+# Core dependencies for Real-Time Object Detection & Counting System
 
-
-
+# Computer Vision
 opencv-python>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0
 imutils>=0.5.4
 
+# Deep Learning - YOLO
 ultralytics>=8.0.0
+
+# Backend API Server
+flask>=2.3.0
+flask-cors>=4.0.0
+flask-socketio>=5.3.0
+python-socketio>=5.8.0
+eventlet>=0.33.0
 
 # GUI
 # Tkinter is included with Python, no installation needed
