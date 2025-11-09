@@ -9,7 +9,16 @@ export const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 10000, // 10 second timeout
+  timeout: 60000, // 60 second timeout (RTSP connections can take longer)
+});
+
+// Create a separate instance for camera operations with longer timeout
+export const cameraApi = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  timeout: 90000, // 90 second timeout for camera start/stop operations
 });
 
 // Create Socket.IO instance for WebSocket
@@ -64,4 +73,4 @@ socket.on('connect_error', (error) => {
   console.error('[WebSocket] Connection error:', error);
 });
 
-export default { api, socket };
+export default { api, socket, cameraApi };

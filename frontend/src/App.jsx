@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Dashboard from './components/Dashboard';
 import CameraView from './components/CameraView';
-import { socket, api } from './services/api';
+import { socket, api, cameraApi } from './services/api';
 
 function App() {
   const [showCameraView, setShowCameraView] = useState(false);
@@ -55,8 +55,14 @@ function App() {
 
   const handleStartCamera = async () => {
     try {
+      setStatus('Connecting to camera...');
+      setConnectionStatus('connecting');
+      
       const source = parseInt(settings.cameraSource) || settings.cameraSource;
-      const response = await api.post('/api/camera/start', { source });
+      
+      // Use cameraApi with longer timeout for RTSP connections
+      const response = await cameraApi.post('/api/camera/start', { source });
+      
       if (response.data.success) {
         setCameraRunning(true);
         setStatus('Camera connected and streaming');
@@ -66,12 +72,34 @@ function App() {
         setDetectionLog([]);
         addToLog('Camera connected successfully');
       } else {
-        setStatus(`Error: ${response.data.message}`);
+        const errorMsg = response.data.message || 'Failed to start camera';
+        setStatus(`Error: ${errorMsg}`);
         setConnectionStatus('error');
+        addToLog(`Camera connection failed: ${errorMsg}`);
       }
     } catch (error) {
-      setStatus(`Error: ${error.message}`);
+      let errorMsg = 'Unknown error';
+      
+      if (error.response) {
+        // Server responded with error
+        errorMsg = error.response.data?.message || error.response.data?.error_details || error.response.statusText;
+        console.error('[API] Camera start error:', error.response.status, error.response.data);
+      } else if (error.request) {
+        // Request made but no response
+        if (error.code === 'ECONNABORTED') {
+          errorMsg = 'Connection timeout. RTSP camera may be slow to connect. Please try again.';
+        } else {
+          errorMsg = 'No response from server. Make sure the backend is running.';
+        }
+        console.error('[API] No response received:', error.request);
+      } else {
+        errorMsg = error.message || 'Failed to start camera';
+        console.error('[API] Error:', error.message);
+      }
+      
+      setStatus(`Error: ${errorMsg}`);
       setConnectionStatus('error');
+      addToLog(`Camera connection failed: ${errorMsg}`);
     }
   };
 

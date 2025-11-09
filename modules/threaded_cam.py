@@ -80,23 +80,92 @@ class ThreadedVideoCapture:
                 # Check if it's an RTSP stream
                 if isinstance(source, str) and source.startswith('rtsp://'):
                     print(f"[INFO] Detected RTSP stream, configuring for RTSP...")
-                    # RTSP stream - use OpenCV directly with RTSP optimizations
+                    
+                    # Try URL encoding for credentials (fix 401 authentication issues)
+                    from urllib.parse import quote, urlparse, urlunparse
+                    try:
+                        parsed = urlparse(source)
+                        # URL encode username and password to handle special characters
+                        if parsed.username:
+                            encoded_username = quote(parsed.username, safe='')
+                            encoded_password = quote(parsed.password or '', safe='')
+                            # Reconstruct URL with encoded credentials
+                            netloc = f"{encoded_username}:{encoded_password}@{parsed.hostname}"
+                            if parsed.port:
+                                netloc += f":{parsed.port}"
+                            encoded_source = urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+                            print(f"[INFO] Using URL-encoded RTSP stream for authentication")
+                            source = encoded_source
+                    except Exception as e:
+                        print(f"[WARNING] URL encoding failed, using original URL: {e}")
+                    
+                    # Set RTSP transport to TCP for better reliability (before opening)
+                    # This must be done before creating VideoCapture
+                    import os
+                    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp|max_delay;5000000'
+                    
+                    # RTSP stream - try multiple methods
+                    # Method 1: OpenCV with FFMPEG (most common)
+                    print("[INFO] Attempting RTSP connection with OpenCV FFMPEG (TCP transport)...")
                     cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
                     
                     # RTSP-specific settings for better stability
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer to reduce latency
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
                     
-                    # Set timeout for RTSP connection (in milliseconds)
-                    # Note: OpenCV doesn't directly support timeout, but we'll handle it in the read loop
+                    # Give it more time to connect (RTSP can be slow, especially with authentication)
+                    import time
+                    print("[INFO] Waiting for RTSP connection (this may take 10-30 seconds)...")
+                    time.sleep(3)  # Initial wait for connection
+                    
+                    # Check if opened and try to read a frame (with retries for authentication)
+                    max_retries = 5
+                    for retry in range(max_retries):
+                        if cap.isOpened():
+                            print(f"[INFO] RTSP stream opened, verifying connection (attempt {retry + 1}/{max_retries})...")
+                            ret, test_frame = cap.read()
+                            if ret and test_frame is not None:
+                                print("[OK] RTSP stream opened and verified successfully!")
+                                return cap
+                            else:
+                                if retry < max_retries - 1:
+                                    print(f"[INFO] Waiting for frame... (retry {retry + 1}/{max_retries})")
+                                    time.sleep(2)
+                                else:
+                                    print("[WARNING] RTSP opened but failed to read frame after retries")
+                                    cap.release()
+                                    break
+                        else:
+                            if retry < max_retries - 1:
+                                print(f"[INFO] RTSP connection attempt {retry + 1}/{max_retries} failed, retrying...")
+                                time.sleep(2)
+                                cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                            else:
+                                print("[WARNING] Failed to open RTSP with OpenCV FFMPEG after retries")
+                                break
+                    
+                    # Method 2: Try UDP transport (some cameras prefer UDP)
+                    print("[INFO] Trying UDP transport as alternative...")
+                    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp'
+                    cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    time.sleep(3)
                     
                     if cap.isOpened():
-                        print("[OK] RTSP stream opened successfully")
-                        return cap
-                    else:
-                        print("[WARNING] Failed to open RTSP stream with OpenCV, trying imutils...")
-                        # Fallback to imutils
+                        ret, test_frame = cap.read()
+                        if ret and test_frame is not None:
+                            print("[OK] RTSP stream opened with UDP transport")
+                            return cap
+                        cap.release()
+                    
+                    # Method 3: Fallback to imutils (less reliable but sometimes works)
+                    print("[WARNING] OpenCV methods failed, trying imutils fallback...")
+                    try:
                         return VideoStream(src=source).start()
+                    except:
+                        print("[ERROR] All RTSP connection methods failed")
+                        return None
                 else:
                     # IP camera (HTTP/MJPEG) - use imutils
                     print(f"[INFO] Detected IP camera stream...")
