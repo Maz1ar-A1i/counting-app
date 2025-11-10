@@ -85,7 +85,7 @@ def init_detector():
         detector = ObjectDetector(
             model_path='yolov8n.pt',
             confidence=0.5,
-            iou=0.45,
+            iou=0.7,
             device=device,
             img_size=640
         )
@@ -129,13 +129,9 @@ def process_frames():
                     line_crosses = result['line_crosses']
                     new_counts = result['counts']
                     
-                    # Accumulate counts (add new counts to existing)
+                    # Accumulate counts correctly (sum per-frame increments)
                     for class_name, count in new_counts.items():
-                        if class_name not in accumulated_counts:
-                            accumulated_counts[class_name] = 0
-                        # Only update if count increased (new objects detected)
-                        if count > accumulated_counts.get(class_name, 0):
-                            accumulated_counts[class_name] = count
+                        accumulated_counts[class_name] = accumulated_counts.get(class_name, 0) + count
                     
                     # Update statistics with accumulated counts
                     current_stats['tracked_objects'] = tracked_objects
