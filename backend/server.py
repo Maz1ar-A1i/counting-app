@@ -11,6 +11,8 @@ import threading
 import time
 import traceback
 from flask import Flask, Response, jsonify, request, send_from_directory
+from werkzeug.utils import secure_filename
+import numpy as np
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import sys
@@ -46,8 +48,13 @@ current_stats = {
 accumulated_counts = {}  # Track cumulative counts
 
 
-def init_detector():
-    """Initialize detector with auto GPU detection and optimization."""
+def init_detector(force_reload=False):
+    """
+    Initialize detector with auto GPU detection and optimization.
+    
+    Args:
+        force_reload: If True, force reload even if detector exists
+    """
     global detector
     
     try:
@@ -81,16 +88,20 @@ def init_detector():
             print("[CPU] For GPU acceleration, install PyTorch with CUDA support")
             print("=" * 60)
         
-        # Initialize detector
-        detector = ObjectDetector(
-            model_path='yolov8n.pt',
-            confidence=0.5,
-            iou=0.7,
-            device=device,
-            img_size=640
-        )
+        # Initialize detector with enhanced settings for complex scenes
+        # Use yolov8m.pt or yolov8l.pt for better accuracy (downloads automatically if not present)
+        # For best accuracy on complex scenes, use: model_path='yolov8m.pt' or 'yolov8l.pt'
+        if detector is None or force_reload:
+            detector = ObjectDetector(
+                model_path='yolov8m.pt',  # Medium model for better accuracy (use 'yolov8n.pt' for speed)
+                confidence=0.25,  # Lower threshold for better detection in complex scenes
+                iou=0.45,  # NMS IoU threshold
+                device=device,
+                img_size=640,  # Can increase to 1280 for higher accuracy (slower)
+                multi_scale=False  # Set to True for maximum accuracy (slower but better for complex scenes)
+            )
         
-        if not detector.load_model():
+        if not detector.load_model(force_reload=force_reload):
             print("[ERROR] Failed to load detector model")
             return False
         
@@ -515,6 +526,12 @@ def update_settings():
         if 'iou' in data:
             detector.set_iou(data['iou'])
             print(f"[INFO] IoU updated to: {data['iou']}")
+        if 'multi_scale' in data:
+            detector.multi_scale = bool(data['multi_scale'])
+            print(f"[INFO] Multi-scale inference: {'enabled' if detector.multi_scale else 'disabled'}")
+        if 'img_size' in data:
+            detector.img_size = int(data['img_size'])
+            print(f"[INFO] Image size updated to: {detector.img_size}")
         
         return jsonify({'success': True})
     
@@ -599,6 +616,204 @@ def toggle_line_mode():
 def get_stats():
     """Get current statistics."""
     return jsonify(current_stats)
+
+
+@app.route('/api/detector/reload', methods=['POST'])
+def reload_detector():
+    """Reload the detector model."""
+    global detector
+    
+    try:
+        print("[INFO] Reloading detector model...")
+        
+        # Release old model if exists
+        if detector is not None:
+            try:
+                # Clear GPU memory if using CUDA
+                if detector.device == 'cuda':
+                    import torch
+                    if detector.model is not None:
+                        del detector.model
+                    torch.cuda.empty_cache()
+                    print("[INFO] Cleared GPU memory")
+            except Exception as e:
+                print(f"[WARNING] Error clearing old model: {e}")
+        
+        # Reinitialize detector with force reload
+        if not init_detector(force_reload=True):
+            return jsonify({
+                'success': False,
+                'message': 'Failed to reload detector model. Check console for details.'
+            }), 500
+        
+        # Verify model loaded
+        if detector is None or detector.model is None:
+            return jsonify({
+                'success': False,
+                'message': 'Model reloaded but not properly initialized.'
+            }), 500
+        
+        print("[OK] Detector model reloaded successfully")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Model reloaded successfully',
+            'model_path': detector.model_path,
+            'device': detector.device,
+            'img_size': detector.img_size,
+            'confidence': detector.confidence
+        })
+    
+    except Exception as e:
+        error_msg = f'Error reloading detector: {str(e)}'
+        print(f"[ERROR] {error_msg}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': error_msg
+        }), 500
+
+
+@app.route('/api/detect/image', methods=['POST'])
+def detect_image():
+    """Detect objects in uploaded image with enhanced settings for better accuracy."""
+    global detector
+    
+    if 'image' not in request.files:
+        return jsonify({'success': False, 'message': 'No image file provided'}), 400
+    
+    file = request.files['image']
+    if file.filename == '':
+        return jsonify({'success': False, 'message': 'No file selected'}), 400
+    
+    try:
+        # Initialize detector if not already done
+        if detector is None:
+            print("[INFO] Initializing detector for image detection...")
+            if not init_detector():
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to load detector model. Check console for details.'
+                }), 500
+        
+        # Verify model is loaded
+        if detector.model is None:
+            print("[WARNING] Model not loaded, attempting to reload...")
+            if not detector.load_model():
+                return jsonify({
+                    'success': False,
+                    'message': 'Model failed to load. Try reloading the model.'
+                }), 500
+        
+        # Read image
+        file_bytes = file.read()
+        nparr = np.frombuffer(file_bytes, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return jsonify({'success': False, 'message': 'Invalid image file'}), 400
+        
+        # Get original image dimensions
+        orig_height, orig_width = image.shape[:2]
+        print(f"[INFO] Processing image: {orig_width}x{orig_height}")
+        
+        # For static images, use higher resolution and multi-scale for better accuracy
+        # Save current settings
+        original_img_size = detector.img_size
+        original_multi_scale = detector.multi_scale
+        original_confidence = detector.confidence
+        
+        # Use higher resolution for images (can be slower but more accurate)
+        # Calculate optimal image size (max 1280, but scale based on original size)
+        max_img_size = 1280
+        if max(orig_width, orig_height) > max_img_size:
+            detector.img_size = max_img_size
+        else:
+            # Use larger size for better detection, but cap at 1280
+            detector.img_size = min(max(orig_width, orig_height), max_img_size)
+        
+        # Enable multi-scale for static images (better accuracy, acceptable for images)
+        detector.multi_scale = True
+        
+        # Use slightly lower confidence for images to catch more objects
+        detector.confidence = max(0.2, original_confidence - 0.05)
+        
+        print(f"[INFO] Image detection settings: img_size={detector.img_size}, multi_scale={detector.multi_scale}, confidence={detector.confidence}")
+        
+        # Perform detection with enhanced settings
+        detections = detector.detect(image)
+        
+        # Restore original settings for video processing
+        detector.img_size = original_img_size
+        detector.multi_scale = original_multi_scale
+        detector.confidence = original_confidence
+        
+        # Count objects by class
+        counts = {}
+        for det in detections:
+            class_name = det['class_name']
+            counts[class_name] = counts.get(class_name, 0) + 1
+        
+        total_count = len(detections)
+        
+        # Draw bounding boxes on image
+        annotated_image = image.copy()
+        for det in detections:
+            x1, y1, x2, y2 = det['bbox']
+            class_name = det['class_name']
+            confidence = det['confidence']
+            
+            # Color based on class
+            color = (0, 255, 0)  # Default green
+            if class_name == 'person':
+                color = (255, 0, 0)  # Blue
+            elif class_name == 'car':
+                color = (0, 255, 0)  # Green
+            elif class_name in ['dog', 'cat']:
+                color = (0, 0, 255)  # Red
+            
+            # Draw bounding box
+            cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, 2)
+            
+            # Draw label
+            label = f"{class_name} {confidence:.2f}"
+            (text_width, text_height), _ = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+            )
+            cv2.rectangle(annotated_image, (x1, y1 - text_height - 5),
+                         (x1 + text_width, y1), color, -1)
+            cv2.putText(annotated_image, label, (x1, y1 - 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # Draw center point
+            center = det['center']
+            cv2.circle(annotated_image, center, 4, color, -1)
+        
+        # Encode annotated image to base64
+        ret, buffer = cv2.imencode('.jpg', annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if ret:
+            annotated_b64 = base64.b64encode(buffer.tobytes()).decode('utf-8')
+        else:
+            annotated_b64 = None
+        
+        print(f"[INFO] Image detection completed: {total_count} objects detected")
+        
+        return jsonify({
+            'success': True,
+            'counts': counts,
+            'total_count': total_count,
+            'detections': detections,
+            'annotated_image': annotated_b64
+        })
+    
+    except Exception as e:
+        error_msg = f'Error processing image: {str(e)}'
+        print(f"[ERROR] {error_msg}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': error_msg
+        }), 500
 
 
 # WebSocket Events

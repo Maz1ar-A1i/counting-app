@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Video, Crosshair } from 'lucide-react';
 
-function VideoFeed({ videoFrame, onLineDraw, lineMode, cameraRunning }) {
+function VideoFeed({ videoFrame, onLineDraw, lineMode, cameraRunning, mirror = false }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [drawing, setDrawing] = useState(false);
@@ -52,7 +52,16 @@ function VideoFeed({ videoFrame, onLineDraw, lineMode, cameraRunning }) {
           displayHeight: newHeight
         });
         
-        ctx.drawImage(img, 0, 0, newWidth, newHeight);
+        // Apply mirror effect if needed
+        if (mirror) {
+          ctx.save();
+          ctx.translate(newWidth, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(img, 0, 0, newWidth, newHeight);
+          ctx.restore();
+        } else {
+          ctx.drawImage(img, 0, 0, newWidth, newHeight);
+        }
         
         // Draw line if exists
         if (lineStart) {
@@ -60,25 +69,37 @@ function VideoFeed({ videoFrame, onLineDraw, lineMode, cameraRunning }) {
           ctx.lineWidth = 3;
           ctx.setLineDash([]);
           ctx.beginPath();
-          ctx.moveTo(lineStart.x, lineStart.y);
+          
+          // Adjust coordinates if mirroring
+          let startX = lineStart.x;
+          let startY = lineStart.y;
           const end = tempLineEnd || lineEnd || lineStart;
-          ctx.lineTo(end.x, end.y);
+          let endX = end.x;
+          let endY = end.y;
+          
+          if (mirror) {
+            startX = newWidth - startX;
+            endX = newWidth - endX;
+          }
+          
+          ctx.moveTo(startX, startY);
+          ctx.lineTo(endX, endY);
           ctx.stroke();
           
           ctx.fillStyle = '#00ffff';
           ctx.beginPath();
-          ctx.arc(lineStart.x, lineStart.y, 6, 0, 2 * Math.PI);
+          ctx.arc(startX, startY, 6, 0, 2 * Math.PI);
           ctx.fill();
           if (end !== lineStart) {
             ctx.beginPath();
-            ctx.arc(end.x, end.y, 6, 0, 2 * Math.PI);
+            ctx.arc(endX, endY, 6, 0, 2 * Math.PI);
             ctx.fill();
           }
         }
       };
       img.src = `data:image/jpeg;base64,${videoFrame}`;
     }
-  }, [videoFrame, lineStart, lineEnd, tempLineEnd]);
+  }, [videoFrame, lineStart, lineEnd, tempLineEnd, mirror]);
 
   const handleMouseDown = (e) => {
     if (!lineMode || !cameraRunning) return;
@@ -145,9 +166,17 @@ function VideoFeed({ videoFrame, onLineDraw, lineMode, cameraRunning }) {
       const scaleX = frameWidth / displayWidth;
       const scaleY = frameHeight / displayHeight;
       
-      const startX = Math.max(0, Math.min(frameWidth - 1, Math.floor(lineStart.x * scaleX)));
+      // Adjust coordinates if mirroring
+      let adjustedStartX = lineStart.x;
+      let adjustedEndX = endX;
+      if (mirror) {
+        adjustedStartX = displayWidth - adjustedStartX;
+        adjustedEndX = displayWidth - adjustedEndX;
+      }
+      
+      const startX = Math.max(0, Math.min(frameWidth - 1, Math.floor(adjustedStartX * scaleX)));
       const startY = Math.max(0, Math.min(frameHeight - 1, Math.floor(lineStart.y * scaleY)));
-      const endX_scaled = Math.max(0, Math.min(frameWidth - 1, Math.floor(endX * scaleX)));
+      const endX_scaled = Math.max(0, Math.min(frameWidth - 1, Math.floor(adjustedEndX * scaleX)));
       const endY_scaled = Math.max(0, Math.min(frameHeight - 1, Math.floor(endY * scaleY)));
       
       onLineDraw([startX, startY], [endX_scaled, endY_scaled]);
@@ -185,7 +214,7 @@ function VideoFeed({ videoFrame, onLineDraw, lineMode, cameraRunning }) {
       <div 
         ref={containerRef}
         className="relative bg-black rounded-lg overflow-hidden flex items-center justify-center"
-        style={{ height: '400px' }}
+        style={{ minHeight: '400px' }}
       >
         {videoFrame ? (
           <canvas

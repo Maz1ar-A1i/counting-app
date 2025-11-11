@@ -161,22 +161,24 @@ class ObjectDetector:
     YOLO-based object detector with integrated tracking and line-cross counting.
     """
     
-    def __init__(self, model_path='yolov8n.pt', confidence=0.5, iou=0.45, device='cpu', img_size=640):
+    def __init__(self, model_path='yolov8n.pt', confidence=0.25, iou=0.45, device='cpu', img_size=640, multi_scale=False):
         """
-        Initialize detector.
+        Initialize detector with enhanced settings for complex scene detection.
         
         Args:
-            model_path: Path to YOLO model weights
-            confidence: Confidence threshold
-            iou: IoU threshold for NMS
+            model_path: Path to YOLO model weights (default: yolov8n.pt, recommend yolov8m.pt or yolov8l.pt for better accuracy)
+            confidence: Confidence threshold (lower = more detections, default: 0.25 for complex scenes)
+            iou: IoU threshold for NMS (default: 0.45)
             device: 'cpu' or 'cuda'
-            img_size: Input image size
+            img_size: Input image size (default: 640, can use 1280 for higher accuracy)
+            multi_scale: Enable multi-scale inference for better detection (slower but more accurate)
         """
         self.model_path = model_path
         self.confidence = confidence
         self.iou = iou
         self.device = device
         self.img_size = img_size
+        self.multi_scale = multi_scale
         self.model = None
         self.use_half = False  # Enable FP16 on CUDA for faster inference
         
@@ -193,19 +195,46 @@ class ObjectDetector:
         self.track_history = defaultdict(lambda: deque(maxlen=10))  # {track_id: deque of (x, y)}
         self.crossed_tracks = set()  # Track IDs that have already crossed
         
-        # Detection classes (COCO dataset)
+        # Detection classes (COCO dataset) - Expanded for better coverage
         self.class_names = {
             0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus',
             6: 'train', 7: 'truck', 14: 'bird', 15: 'cat', 16: 'dog',
             24: 'backpack', 26: 'handbag', 28: 'suitcase', 39: 'bottle',
-            41: 'cup', 56: 'chair', 57: 'couch', 58: 'potted plant',
-            59: 'bed', 60: 'dining table', 62: 'tv', 63: 'laptop',
-            64: 'mouse', 65: 'remote', 66: 'keyboard', 67: 'cell phone'
+            41: 'cup', 43: 'knife', 44: 'spoon', 46: 'bowl', 47: 'banana',
+            48: 'apple', 49: 'sandwich', 50: 'orange', 51: 'broccoli',
+            52: 'carrot', 53: 'hot dog', 54: 'pizza', 55: 'donut',
+            56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed',
+            60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop',
+            64: 'mouse', 65: 'remote', 66: 'keyboard', 67: 'cell phone',
+            68: 'microwave', 69: 'oven', 70: 'toaster', 71: 'sink',
+            72: 'refrigerator', 73: 'book', 74: 'clock', 75: 'vase',
+            76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 79: 'toothbrush'
         }
         
-    def load_model(self):
-        """Load YOLO model with GPU support."""
+    def load_model(self, force_reload=False):
+        """
+        Load YOLO model with GPU support.
+        
+        Args:
+            force_reload: If True, reload model even if already loaded
+        """
         try:
+            # Check if model is already loaded
+            if self.model is not None and not force_reload:
+                print("[INFO] Model already loaded, skipping...")
+                return True
+            
+            # Clear old model if reloading
+            if force_reload and self.model is not None:
+                try:
+                    del self.model
+                    if self.device == 'cuda':
+                        import torch
+                        torch.cuda.empty_cache()
+                    print("[INFO] Cleared old model")
+                except Exception as e:
+                    print(f"[WARNING] Error clearing old model: {e}")
+            
             print(f"Loading YOLO model: {self.model_path}...")
             
             # Check GPU availability
@@ -219,8 +248,21 @@ class ObjectDetector:
                     print(f"[INFO] GPU detected: {torch.cuda.get_device_name(0)}")
                     print(f"[INFO] GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
             
-            # Load model
-            self.model = YOLO(self.model_path)
+            # Load model (will download automatically if not present)
+            print(f"[INFO] Loading model from: {self.model_path}")
+            try:
+                self.model = YOLO(self.model_path)
+                print(f"[OK] Model file loaded successfully")
+            except Exception as e:
+                print(f"[ERROR] Failed to load model file: {e}")
+                print(f"[INFO] Model will be downloaded automatically on first use")
+                # Try to download model
+                try:
+                    self.model = YOLO(self.model_path)
+                    print(f"[OK] Model downloaded and loaded successfully")
+                except Exception as download_error:
+                    print(f"[ERROR] Failed to download model: {download_error}")
+                    return False
 
             if self.device == 'cuda':
                 try:
@@ -253,30 +295,42 @@ class ObjectDetector:
                 print("[OK] Using CPU")
                 self.use_half = False
 
-            # Warm up model on the correct device
-            print("[INFO] Warming up model...")
-            warm_h = self.img_size
-            warm_w = self.img_size
-            dummy = np.zeros((warm_h, warm_w, 3), dtype=np.uint8)
+            # Verify model is properly loaded
+            if self.model is None:
+                print("[ERROR] Model object is None after loading")
+                return False
             
-            # Run warm-up inference
-            _ = self.model(
-                dummy, 
-                verbose=False,
-                half=self.use_half if self.device == 'cuda' else False
-            )
+            # Warm up model on the correct device
+            print("[INFO] Warming up model with test inference...")
+            try:
+                warm_h = min(self.img_size, 640)  # Use smaller size for warm-up
+                warm_w = min(self.img_size, 640)
+                dummy = np.zeros((warm_h, warm_w, 3), dtype=np.uint8)
+                
+                # Run warm-up inference
+                _ = self.model(
+                    dummy, 
+                    verbose=False,
+                    half=self.use_half if self.device == 'cuda' else False
+                )
+                print("[OK] Model warm-up successful")
+            except Exception as warmup_error:
+                print(f"[WARNING] Model warm-up failed: {warmup_error}")
+                print("[INFO] Continuing anyway - model may still work")
             
             # Clear GPU cache if using GPU
             if self.device == 'cuda':
                 import torch
                 torch.cuda.empty_cache()
             
-            print(f"[OK] Model loaded and warmed up successfully")
+            print(f"[OK] Model loaded and initialized successfully")
+            print(f"[INFO] Model info: device={self.device}, img_size={self.img_size}, confidence={self.confidence}")
             return True
         except Exception as e:
             print(f"[ERROR] Failed to load model: {e}")
             import traceback
             traceback.print_exc()
+            self.model = None
             return False
     
     def set_confidence(self, confidence):
@@ -289,7 +343,7 @@ class ObjectDetector:
     
     def detect(self, frame):
         """
-        Perform object detection on frame.
+        Perform object detection on frame with enhanced settings for complex scenes.
         
         Args:
             frame: Input frame (numpy array)
@@ -301,57 +355,199 @@ class ObjectDetector:
             return []
         
         try:
-            # Run YOLO inference with GPU optimization
-            results = self.model(
-                frame,
-                conf=self.confidence,
-                iou=self.iou,
-                imgsz=self.img_size,
-                verbose=False,
-                half=self.use_half if self.device == 'cuda' else False,  # Only use FP16 on GPU
-                agnostic_nms=False,
-                max_det=200,
-                classes=list(self.class_names.keys()),
-                device=self.device  # Explicitly specify device
-            )
-            
-            detections = []
-            
-            for result in results:
-                boxes = result.boxes
-                if boxes is None or len(boxes) == 0:
-                    continue
+            # Multi-scale inference for better detection in complex scenes
+            if self.multi_scale:
+                # Run inference at multiple scales and combine results
+                scales = [self.img_size, int(self.img_size * 1.25), int(self.img_size * 0.8)]
+                all_detections = []
                 
-                boxes_xyxy = boxes.xyxy.cpu().numpy()
-                boxes_conf = boxes.conf.cpu().numpy()
-                boxes_cls = boxes.cls.cpu().numpy()
-                
-                for i in range(len(boxes)):
-                    x1, y1, x2, y2 = boxes_xyxy[i]
-                    class_id = int(boxes_cls[i])
-                    confidence = float(boxes_conf[i])
+                for scale in scales:
+                    results = self.model(
+                        frame,
+                        conf=self.confidence,
+                        iou=self.iou,
+                        imgsz=scale,
+                        verbose=False,
+                        half=self.use_half if self.device == 'cuda' else False,
+                        agnostic_nms=False,
+                        max_det=300,  # Higher max detections for multi-scale
+                        classes=list(self.class_names.keys()),
+                        device=self.device
+                    )
                     
-                    # Filter by class (only detect classes in our list)
-                    if class_id not in self.class_names:
+                    for result in results:
+                        boxes = result.boxes
+                        if boxes is None or len(boxes) == 0:
+                            continue
+                        
+                        boxes_xyxy = boxes.xyxy.cpu().numpy()
+                        boxes_conf = boxes.conf.cpu().numpy()
+                        boxes_cls = boxes.cls.cpu().numpy()
+                        
+                        for i in range(len(boxes)):
+                            x1, y1, x2, y2 = boxes_xyxy[i]
+                            class_id = int(boxes_cls[i])
+                            confidence = float(boxes_conf[i])
+                            
+                            if class_id not in self.class_names:
+                                continue
+                            
+                            class_name = self.class_names[class_id]
+                            center_x = int((x1 + x2) / 2)
+                            center_y = int((y1 + y2) / 2)
+                            
+                            all_detections.append({
+                                'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                                'class_id': class_id,
+                                'class_name': class_name,
+                                'confidence': confidence,
+                                'center': (center_x, center_y)
+                            })
+                
+                # Apply NMS to remove duplicate detections from multi-scale
+                if len(all_detections) > 0:
+                    return self._apply_nms(all_detections)
+                return []
+            else:
+                # Single-scale inference (faster)
+                results = self.model(
+                    frame,
+                    conf=self.confidence,
+                    iou=self.iou,
+                    imgsz=self.img_size,
+                    verbose=False,
+                    half=self.use_half if self.device == 'cuda' else False,
+                    agnostic_nms=False,
+                    max_det=300,  # Increased from 200 for complex scenes
+                    classes=list(self.class_names.keys()),
+                    device=self.device
+                )
+            
+                detections = []
+                
+                for result in results:
+                    boxes = result.boxes
+                    if boxes is None or len(boxes) == 0:
                         continue
                     
-                    class_name = self.class_names[class_id]
-                    center_x = int((x1 + x2) / 2)
-                    center_y = int((y1 + y2) / 2)
+                    boxes_xyxy = boxes.xyxy.cpu().numpy()
+                    boxes_conf = boxes.conf.cpu().numpy()
+                    boxes_cls = boxes.cls.cpu().numpy()
                     
-                    detections.append({
-                        'bbox': [int(x1), int(y1), int(x2), int(y2)],
-                        'class_id': class_id,
-                        'class_name': class_name,
-                        'confidence': confidence,
-                        'center': (center_x, center_y)
-                    })
-            
-            return detections
+                    for i in range(len(boxes)):
+                        x1, y1, x2, y2 = boxes_xyxy[i]
+                        class_id = int(boxes_cls[i])
+                        confidence = float(boxes_conf[i])
+                        
+                        # Filter by class (only detect classes in our list)
+                        if class_id not in self.class_names:
+                            continue
+                        
+                        class_name = self.class_names[class_id]
+                        center_x = int((x1 + x2) / 2)
+                        center_y = int((y1 + y2) / 2)
+                        
+                        detections.append({
+                            'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                            'class_id': class_id,
+                            'class_name': class_name,
+                            'confidence': confidence,
+                            'center': (center_x, center_y)
+                        })
+                
+                return detections
             
         except Exception as e:
             print(f"Detection error: {e}")
+            import traceback
+            traceback.print_exc()
             return []
+    
+    def _apply_nms(self, detections, iou_threshold=0.5):
+        """
+        Apply Non-Maximum Suppression to remove duplicate detections.
+        Used for multi-scale inference to merge results.
+        
+        Args:
+            detections: List of detection dictionaries
+            iou_threshold: IoU threshold for NMS
+        
+        Returns:
+            Filtered list of detections
+        """
+        if len(detections) == 0:
+            return []
+        
+        # Sort by confidence (highest first)
+        detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+        
+        # Group by class
+        class_groups = {}
+        for det in detections:
+            class_id = det['class_id']
+            if class_id not in class_groups:
+                class_groups[class_id] = []
+            class_groups[class_id].append(det)
+        
+        # Apply NMS per class
+        final_detections = []
+        for class_id, class_dets in class_groups.items():
+            if len(class_dets) == 0:
+                continue
+            
+            # Standard NMS: keep highest confidence, suppress overlapping boxes
+            keep = []
+            suppressed = set()
+            
+            for i, det1 in enumerate(class_dets):
+                if i in suppressed:
+                    continue
+                
+                keep.append(i)
+                bbox1 = det1['bbox']
+                
+                # Suppress overlapping boxes with lower confidence
+                for j, det2 in enumerate(class_dets):
+                    if i == j or j in suppressed:
+                        continue
+                    
+                    bbox2 = det2['bbox']
+                    iou = self._calculate_iou(bbox1, bbox2)
+                    
+                    if iou >= iou_threshold:
+                        suppressed.add(j)
+            
+            # Add kept detections
+            for idx in keep:
+                final_detections.append(class_dets[idx])
+        
+        return final_detections
+    
+    def _calculate_iou(self, bbox1, bbox2):
+        """Calculate IoU between two bounding boxes."""
+        x1_min, y1_min, x1_max, y1_max = bbox1
+        x2_min, y2_min, x2_max, y2_max = bbox2
+        
+        # Calculate intersection
+        inter_x_min = max(x1_min, x2_min)
+        inter_y_min = max(y1_min, y2_min)
+        inter_x_max = min(x1_max, x2_max)
+        inter_y_max = min(y1_max, y2_max)
+        
+        if inter_x_max < inter_x_min or inter_y_max < inter_y_min:
+            return 0.0
+        
+        inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+        
+        # Calculate union
+        bbox1_area = (x1_max - x1_min) * (y1_max - y1_min)
+        bbox2_area = (x2_max - x2_min) * (y2_max - y2_min)
+        union_area = bbox1_area + bbox2_area - inter_area
+        
+        if union_area == 0:
+            return 0.0
+        
+        return inter_area / union_area
     
     def _line_segment_intersection(self, p1, p2, p3, p4):
         """
