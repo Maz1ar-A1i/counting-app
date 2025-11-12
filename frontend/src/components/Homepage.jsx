@@ -1,7 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { Camera, Upload, LineChart } from 'lucide-react';
+import { Camera, Upload, LineChart, Ruler } from 'lucide-react';
 
 function Homepage() {
   const navigate = useNavigate();
@@ -33,6 +33,15 @@ function Homepage() {
       color: 'from-green-600 to-emerald-600',
       hoverColor: 'from-green-700 to-emerald-700',
       path: '/live-camera-line'
+    },
+    {
+      id: 'area-classification',
+      title: 'Area-wise Classification',
+      description: 'Detect regions by area size without ML models (separate mode)',
+      icon: Ruler,
+      color: 'from-amber-600 to-yellow-600',
+      hoverColor: 'from-amber-700 to-yellow-700',
+      path: '/area-classification'
     }
   ];
 
@@ -118,7 +127,7 @@ function Homepage() {
           <h3 className="text-2xl font-bold text-white mb-4 text-center">
             Features
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             <div className="text-center">
               <div className="text-4xl mb-2">🎯</div>
               <h4 className="text-lg font-semibold text-white mb-2">Real-time Detection</h4>
@@ -133,6 +142,11 @@ function Homepage() {
               <div className="text-4xl mb-2">🚀</div>
               <h4 className="text-lg font-semibold text-white mb-2">Line Crossing</h4>
               <p className="text-slate-400 text-sm">Track objects crossing designated lines</p>
+            </div>
+            <div className="text-center">
+              <div className="text-4xl mb-2">📐</div>
+              <h4 className="text-lg font-semibold text-white mb-2">Area-wise Classification</h4>
+              <p className="text-slate-400 text-sm">Classify regions by size without touching ML models</p>
             </div>
           </div>
         </motion.div>

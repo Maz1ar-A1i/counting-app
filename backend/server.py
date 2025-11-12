@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules.threaded_cam import ThreadedVideoCapture
 from modules.detector import ObjectDetector
+from modules.area_classifier import AreaClassifier
 import torch
 
 app = Flask(__name__, static_folder='../frontend/build', static_url_path='')
@@ -46,6 +47,18 @@ current_stats = {
     'tracked_objects': []
 }
 accumulated_counts = {}  # Track cumulative counts
+
+# Area-wise classification state (separate from model-based flow)
+area_camera = None
+area_classifier = None
+is_area_processing = False
+area_processing_thread = None
+last_area_frame = None
+area_stats = {
+    'fps': 0.0,
+    'counts': {},
+    'total_regions': 0
+}
 
 
 def init_detector(force_reload=False):
@@ -119,7 +132,18 @@ def process_frames():
     global last_tracked_objects, last_line_crosses, accumulated_counts
     
     frame_skip = 0
-    infer_every_n = 2  # Run detection every 2 frames
+    # Adapt inference frequency to device
+    infer_every_n = 2
+    try:
+        if detector is not None and getattr(detector, 'device', 'cpu') != 'cuda':
+            infer_every_n = 3
+    except Exception:
+        pass
+
+    # Throttle video emit rate to reduce network/CPU load
+    target_fps = 20.0
+    min_emit_interval = 1.0 / target_fps
+    last_emit_time = 0.0
     
     print("[INFO] Frame processing thread started")
     
@@ -175,16 +199,20 @@ def process_frames():
             
             # Encode frame to JPEG
             try:
-                ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                if ret:
-                    frame_bytes = buffer.tobytes()
-                    frame_b64 = base64.b64encode(frame_bytes).decode('utf-8')
-                    
-                    # Send frame via WebSocket
-                    socketio.emit('video_frame', {
-                        'frame': frame_b64,
-                        'stats': current_stats
-                    })
+                # Throttle emits to target FPS
+                now = time.time()
+                if (now - last_emit_time) >= min_emit_interval:
+                    ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    if ret:
+                        frame_bytes = buffer.tobytes()
+                        frame_b64 = base64.b64encode(frame_bytes).decode('utf-8')
+                        
+                        # Send frame via WebSocket
+                        socketio.emit('video_frame', {
+                            'frame': frame_b64,
+                            'stats': current_stats
+                        })
+                        last_emit_time = now
             except Exception as e:
                 print(f"[ERROR] Frame encoding error: {e}")
             
@@ -828,6 +856,167 @@ def handle_connect():
 def handle_disconnect():
     """Handle client disconnection."""
     print("[INFO] WebSocket client disconnected")
+
+
+# ======================
+# Area-wise classification (separate feature)
+# ======================
+def process_area_frames():
+    """Process frames for area-wise classification in a separate thread."""
+    global is_area_processing, area_camera, area_classifier, area_stats, last_area_frame
+
+    frame_index = 0
+    # Throttle emits for area to ~15 FPS to be safe
+    target_fps = 15.0
+    min_emit_interval = 1.0 / target_fps
+    last_emit_time = 0.0
+
+    print("[INFO] Area processing thread started")
+    try:
+        while is_area_processing and area_camera is not None:
+            ret, frame = area_camera.read()
+            if not ret or frame is None:
+                time.sleep(0.01)
+                continue
+
+            frame_index += 1
+            try:
+                result = area_classifier.process(frame)
+                area_stats['fps'] = result.get('fps', 0.0)
+                area_stats['counts'] = result.get('counts', {})
+                area_stats['total_regions'] = result.get('total_regions', 0)
+                annotated = result.get('frame', frame)
+                last_area_frame = annotated.copy()
+
+                # Throttle emit
+                now = time.time()
+                if (now - last_emit_time) >= min_emit_interval:
+                    ret_j, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    if ret_j:
+                        b64 = base64.b64encode(buffer.tobytes()).decode('utf-8')
+                        socketio.emit('area_frame', {
+                            'frame': b64,
+                            'stats': area_stats
+                        })
+                        last_emit_time = now
+
+                if frame_index % 10 == 0:
+                    socketio.emit('area_stats', area_stats)
+            except Exception as e:
+                print(f"[ERROR] Area classification error: {e}")
+                traceback.print_exc()
+                if last_area_frame is not None:
+                    try:
+                        ret_j, buffer = cv2.imencode('.jpg', last_area_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                        if ret_j:
+                            b64 = base64.b64encode(buffer.tobytes()).decode('utf-8')
+                            socketio.emit('area_frame', {
+                                'frame': b64,
+                                'stats': area_stats
+                            })
+                    except Exception:
+                        pass
+
+            time.sleep(0.005)
+    except Exception as e:
+        print(f"[ERROR] Area processing thread error: {e}")
+        traceback.print_exc()
+    finally:
+        print("[INFO] Area processing thread stopped")
+        is_area_processing = False
+
+
+@app.route('/api/area/start', methods=['POST'])
+def area_start():
+    """Start area-wise classification with separate camera/context."""
+    global area_camera, area_classifier, is_area_processing, area_processing_thread, area_stats
+
+    if is_area_processing:
+        return jsonify({'success': False, 'message': 'Area processing already running'}), 400
+
+    try:
+        data = request.json or {}
+        source = data.get('source', 0)
+        min_area = int(data.get('min_area', 500))
+        area_bins = data.get('area_bins')  # optional dict
+
+        # Parse source
+        try:
+            if isinstance(source, str):
+                if source.startswith(('rtsp://', 'http://', 'https://')):
+                    pass
+                else:
+                    source = int(source)
+        except ValueError:
+            pass
+
+        # Stop existing
+        if area_camera is not None:
+            try:
+                area_camera.stop()
+            except Exception:
+                pass
+            area_camera = None
+            time.sleep(0.3)
+
+        # Create classifier and camera
+        area_classifier = AreaClassifier(min_area=min_area, area_bins=area_bins)
+        area_camera = ThreadedVideoCapture(source=source, width=640, height=360)
+
+        if not area_camera.start():
+            area_camera = None
+            return jsonify({'success': False, 'message': 'Failed to start area camera'}), 500
+
+        # Reset stats
+        area_stats = {'fps': 0.0, 'counts': {}, 'total_regions': 0}
+
+        # Start thread
+        is_area_processing = True
+        area_processing_thread = threading.Thread(target=process_area_frames, daemon=True)
+        area_processing_thread.start()
+
+        return jsonify({'success': True, 'message': 'Area classification started'})
+    except Exception as e:
+        print(f"[ERROR] Area start failed: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/area/stop', methods=['POST'])
+def area_stop():
+    """Stop area-wise classification."""
+    global area_camera, is_area_processing, area_processing_thread
+
+    try:
+        is_area_processing = False
+        if area_processing_thread:
+            area_processing_thread.join(timeout=2.0)
+            area_processing_thread = None
+        if area_camera:
+            area_camera.stop()
+            area_camera = None
+        return jsonify({'success': True, 'message': 'Area classification stopped'})
+    except Exception as e:
+        print(f"[ERROR] Area stop failed: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/area/settings', methods=['POST'])
+def area_settings():
+    """Update area-wise classification settings without affecting models."""
+    global area_classifier
+
+    if area_classifier is None:
+        return jsonify({'success': False, 'message': 'Area classifier not initialized'}), 400
+
+    try:
+        data = request.json or {}
+        min_area = data.get('min_area')
+        area_bins = data.get('area_bins')
+        area_classifier.update_settings(min_area=min_area, area_bins=area_bins)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 if __name__ == '__main__':

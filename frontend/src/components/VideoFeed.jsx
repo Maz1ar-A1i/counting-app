@@ -25,7 +25,10 @@ function VideoFeed({ videoFrame, onLineDraw, lineMode, cameraRunning, mirror = f
         if (!container) return;
         
         const containerWidth = container.clientWidth - 32;
-        const containerHeight = 400; // Fixed height for video area
+        // Make height responsive to viewport while keeping a sensible minimum
+        const containerStyles = window.getComputedStyle(container);
+        const explicitHeight = parseFloat(containerStyles.height);
+        const containerHeight = Math.max(400, isNaN(explicitHeight) ? container.clientHeight || 400 : explicitHeight);
         
         const scale = Math.min(
           containerWidth / img.width,
@@ -214,7 +217,7 @@ function VideoFeed({ videoFrame, onLineDraw, lineMode, cameraRunning, mirror = f
       <div 
         ref={containerRef}
         className="relative bg-black rounded-lg overflow-hidden flex items-center justify-center"
-        style={{ minHeight: '400px' }}
+        style={{ minHeight: '400px', height: '60vh' }}
       >
         {videoFrame ? (
           <canvas
