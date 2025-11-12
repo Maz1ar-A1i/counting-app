@@ -42,6 +42,15 @@ function Homepage() {
       color: 'from-amber-600 to-yellow-600',
       hoverColor: 'from-amber-700 to-yellow-700',
       path: '/area-classification'
+    },
+    {
+      id: 'system-status',
+      title: 'System Status & Metrics',
+      description: 'Live CPU/GPU, RAM and Disk usage for this app',
+      icon: LineChart,
+      color: 'from-indigo-600 to-sky-600',
+      hoverColor: 'from-indigo-700 to-sky-700',
+      path: '/system-status'
     }
   ];
 

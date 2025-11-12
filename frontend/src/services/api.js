@@ -21,6 +21,12 @@ export const cameraApi = axios.create({
   timeout: 90000, // 90 second timeout for camera start/stop operations
 });
 
+// System metrics helper
+export const systemApi = {
+  getMetrics: () => api.get('/api/system/metrics'),
+  getRecommendations: () => api.get('/api/system/recommendations'),
+};
+
 // Create Socket.IO instance for WebSocket
 export const socket = io(API_BASE_URL, {
   transports: ['websocket', 'polling'],
@@ -73,4 +79,4 @@ socket.on('connect_error', (error) => {
   console.error('[WebSocket] Connection error:', error);
 });
 
-export default { api, socket, cameraApi };
+export default { api, socket, cameraApi, systemApi };

@@ -17,6 +17,8 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import sys
 import os
+import platform
+import shutil
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,6 +27,7 @@ from modules.threaded_cam import ThreadedVideoCapture
 from modules.detector import ObjectDetector
 from modules.area_classifier import AreaClassifier
 import torch
+import psutil
 
 app = Flask(__name__, static_folder='../frontend/build', static_url_path='')
 CORS(app)
@@ -1017,6 +1020,145 @@ def area_settings():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+# ======================
+# System metrics & recommendations
+# ======================
+def _detect_disk_kind() -> str:
+    """
+    Best-effort disk type detection.
+    Returns: 'ssd' | 'hdd' | 'unknown'
+    """
+    try:
+        if platform.system() == 'Linux':
+            # Check primary device rotational flag
+            root = '/'
+            stat = os.stat(root)
+            major_minor = f"{os.major(stat.st_dev)}:{os.minor(stat.st_dev)}"
+            # Find matching block device
+            by_dev = '/sys/dev/block'
+            for name in os.listdir(by_dev):
+                if name == major_minor:
+                    dev_link = os.path.realpath(os.path.join(by_dev, name))
+                    block = dev_link.split('/')[-1]
+                    rot_path = f"/sys/block/{block}/queue/rotational"
+                    if os.path.exists(rot_path):
+                        with open(rot_path, 'r') as f:
+                            val = f.read().strip()
+                            return 'hdd' if val == '1' else 'ssd'
+            return 'unknown'
+        # Windows/macOS fallback
+        return 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+@app.route('/api/system/metrics', methods=['GET'])
+def system_metrics():
+    """Return live system metrics: CPU/GPU, RAM, Disk."""
+    try:
+        # CPU
+        cpu_percent = psutil.cpu_percent(interval=0.2)
+        cpu_freq = psutil.cpu_freq()
+        cpu = {
+            'percent': cpu_percent,
+            'cores_physical': psutil.cpu_count(logical=False),
+            'cores_logical': psutil.cpu_count(logical=True),
+            'freq_current_mhz': cpu_freq.current if cpu_freq else None,
+            'freq_max_mhz': cpu_freq.max if cpu_freq else None,
+            'processor': platform.processor(),
+            'brand': platform.uname().machine
+        }
+
+        # RAM
+        vm = psutil.virtual_memory()
+        ram = {
+            'total_gb': round(vm.total / (1024 ** 3), 2),
+            'available_gb': round(vm.available / (1024 ** 3), 2),
+            'used_gb': round(vm.used / (1024 ** 3), 2),
+            'percent': vm.percent
+        }
+
+        # Disk (root partition)
+        total, used, free = shutil.disk_usage(os.path.abspath(os.sep))
+        disk = {
+            'total_gb': round(total / (1024 ** 3), 2),
+            'used_gb': round(used / (1024 ** 3), 2),
+            'free_gb': round(free / (1024 ** 3), 2),
+            'percent': round(used / total * 100, 1),
+            'kind': _detect_disk_kind()
+        }
+
+        # GPU (Torch CUDA)
+        gpu = None
+        if torch.cuda.is_available():
+            try:
+                idx = 0
+                props = torch.cuda.get_device_properties(idx)
+                mem_total = props.total_memory / (1024 ** 3)
+                mem_alloc = torch.cuda.memory_allocated(idx) / (1024 ** 3)
+                mem_reserved = torch.cuda.memory_reserved(idx) / (1024 ** 3)
+                gpu = {
+                    'name': torch.cuda.get_device_name(idx),
+                    'total_mem_gb': round(mem_total, 2),
+                    'allocated_gb': round(mem_alloc, 2),
+                    'reserved_gb': round(mem_reserved, 2),
+                    'cuda_version': torch.version.cuda,
+                    'sm_count': getattr(props, 'multi_processor_count', None)
+                }
+            except Exception as e:
+                gpu = {'error': str(e)}
+
+        # App-specific status
+        streams = {
+            'detector_running': is_processing,
+            'area_running': is_area_processing
+        }
+
+        return jsonify({
+            'success': True,
+            'cpu': cpu,
+            'ram': ram,
+            'disk': disk,
+            'gpu': gpu,
+            'streams': streams
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/system/recommendations', methods=['GET'])
+def system_recommendations():
+    """Return recommended and minimum resources for smooth operation."""
+    # Baseline from typical YOLOv8 workloads; adjust to your scene complexity
+    rec = {
+        'minimum': {
+            'cpu': '4 cores @ 2.5+ GHz',
+            'ram': '8 GB',
+            'disk': '10 GB free (SSD preferred)',
+            'gpu': 'Optional; CPU-only works with yolov8n at lower FPS'
+        },
+        'recommended': {
+            'cpu': '6–8 cores @ 3.0+ GHz',
+            'ram': '16 GB',
+            'disk': '20+ GB free SSD',
+            'gpu': 'NVIDIA GPU (6–8 GB VRAM), e.g., RTX 2060/3060 (CUDA 11.8/12.1)'
+        },
+        'for_best_results': {
+            'cpu': '8–12 cores modern CPU',
+            'ram': '32 GB',
+            'disk': 'NVMe SSD with ample space for models and recordings',
+            'gpu': 'NVIDIA 8–12 GB VRAM (e.g., RTX 3060/3080/4060), latest drivers'
+        },
+        'other': [
+            'Stable network for RTSP/IP cameras (wired Ethernet preferred)',
+            'Up-to-date GPU drivers and CUDA/cuDNN (if using GPU)',
+            'Run backend and frontend on same machine or low-latency network',
+            'Close other heavy apps to avoid CPU/GPU contention'
+        ]
+    }
+    return jsonify({'success': True, 'recommendations': rec})
 
 
 if __name__ == '__main__':
